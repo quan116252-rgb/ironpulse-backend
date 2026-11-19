@@ -3,7 +3,7 @@ from django.contrib.auth import authenticate
 from rest_framework.decorators import api_view, action
 from rest_framework.response import Response
 from rest_framework import viewsets, status
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from django.db.models import Count
 from django.utils import timezone
 
@@ -22,6 +22,21 @@ from .serializers import (
     TrainerSerializer,
     GymClassSerializer
 )
+
+
+def _to_date(val):
+    if not val:
+        return None
+    if isinstance(val, datetime):
+        return val.date()
+    if isinstance(val, date):
+        return val
+    if isinstance(val, str):
+        try:
+            return date.fromisoformat(val.strip()[:10])
+        except ValueError:
+            return None
+    return None
 
 
 @api_view(['PUT', 'PATCH'])
@@ -255,17 +270,22 @@ def manage_members(request, member_id=None):
     if request.method == 'GET':
         try:
             members = MemberPackage.objects.all().order_by('-created_at')
-            data = [{
-                "id": f"M00{m.id}",
-                "realId": m.id,
-                "fullName": getattr(m, 'full_name', '') or 'Chưa cập nhật',
-                "email": getattr(m, 'email', '') or '',
-                "phone": getattr(m, 'phone', '') or 'Chưa cập nhật',
-                "packageName": getattr(m, 'package_name', 'Gói Chuẩn'),
-                "startDate": str(m.start_date) if m.start_date else str(date.today()),
-                "endDate": str(m.end_date) if m.end_date else str(date.today()),
-                "status": "Active" if (m.end_date and m.end_date >= date.today()) else "Expired"
-            } for m in members]
+            today = date.today()
+            data = []
+            for m in members:
+                end_dt = _to_date(m.end_date)
+                start_dt = _to_date(m.start_date)
+                data.append({
+                    "id": f"M00{m.id}",
+                    "realId": m.id,
+                    "fullName": getattr(m, 'full_name', '') or 'Chưa cập nhật',
+                    "email": getattr(m, 'email', '') or '',
+                    "phone": getattr(m, 'phone', '') or 'Chưa cập nhật',
+                    "packageName": getattr(m, 'package_name', 'Gói Chuẩn'),
+                    "startDate": start_dt.isoformat() if start_dt else today.isoformat(),
+                    "endDate": end_dt.isoformat() if end_dt else today.isoformat(),
+                    "status": "Active" if (end_dt and end_dt >= today) else "Expired"
+                })
             return Response(data, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -273,13 +293,15 @@ def manage_members(request, member_id=None):
     elif request.method == 'POST':
         data = request.data
         try:
+            start_dt = _to_date(data.get('startDate'))
+            end_dt = _to_date(data.get('endDate'))
             member = MemberPackage.objects.create(
                 full_name=data.get('fullName'),
                 email=data.get('email'),
                 phone=data.get('phone'),
                 package_name=data.get('packageName', 'Gói Chuẩn'),
-                start_date=data.get('startDate'),
-                end_date=data.get('endDate')
+                start_date=start_dt or data.get('startDate'),
+                end_date=end_dt or data.get('endDate')
             )
             return Response({"message": "Thêm hội viên thành công!", "id": member.id}, status=status.HTTP_201_CREATED)
         except Exception as e:
@@ -300,12 +322,27 @@ def manage_members(request, member_id=None):
                 member.phone = data.get('phone')
             if 'packageName' in data and data.get('packageName') is not None:
                 member.package_name = data.get('packageName')
+
             if 'startDate' in data and data.get('startDate'):
-                member.start_date = data.get('startDate')
+                parsed_start = _to_date(data.get('startDate'))
+                if parsed_start is None:
+                    return Response({"error": "Định dạng ngày bắt đầu không hợp lệ (YYYY-MM-DD)!"}, status=status.HTTP_400_BAD_REQUEST)
+                member.start_date = parsed_start
+
             if 'endDate' in data and data.get('endDate'):
-                member.end_date = data.get('endDate')
+                parsed_end = _to_date(data.get('endDate'))
+                if parsed_end is None:
+                    return Response({"error": "Định dạng ngày kết thúc không hợp lệ (YYYY-MM-DD)!"}, status=status.HTTP_400_BAD_REQUEST)
+                member.end_date = parsed_end
 
             member.save()
+            member.refresh_from_db()
+
+            today = date.today()
+            final_start = _to_date(member.start_date)
+            final_end = _to_date(member.end_date)
+            is_active = bool(final_end and final_end >= today)
+
             return Response({
                 "message": "Cập nhật hội viên thành công!",
                 "data": {
@@ -315,9 +352,9 @@ def manage_members(request, member_id=None):
                     "email": member.email,
                     "phone": member.phone,
                     "packageName": member.package_name,
-                    "startDate": str(member.start_date) if member.start_date else '',
-                    "endDate": str(member.end_date) if member.end_date else '',
-                    "status": "Active" if (member.end_date and member.end_date >= date.today()) else "Expired"
+                    "startDate": final_start.isoformat() if final_start else '',
+                    "endDate": final_end.isoformat() if final_end else '',
+                    "status": "Active" if is_active else "Expired"
                 }
             }, status=status.HTTP_200_OK)
         except MemberPackage.DoesNotExist:
@@ -399,13 +436,15 @@ def register_package_api(request):
     elif email:
         existing_package = MemberPackage.objects.filter(email=email).order_by('-end_date').first()
 
-    if existing_package and existing_package.end_date and existing_package.end_date >= date.today():
+    today = date.today()
+    existing_end = _to_date(existing_package.end_date) if existing_package else None
+    if existing_package and existing_end and existing_end >= today:
         return Response(
-            {"error": f"⚠️ Bạn đang sử dụng gói '{existing_package.package_name}' đến hết ngày {existing_package.end_date}. Không thể đăng ký gói mới!"},
+            {"error": f"⚠️ Bạn đang sử dụng gói '{existing_package.package_name}' đến hết ngày {existing_end.isoformat()}. Không thể đăng ký gói mới!"},
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    start_date = date.today()
+    start_date = today
     end_date = start_date + timedelta(days=duration_months * 30)
 
     try:
