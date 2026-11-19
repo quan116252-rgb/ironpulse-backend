@@ -250,7 +250,7 @@ def revenue_statistics(request):
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-@api_view(['GET', 'POST', 'DELETE'])
+@api_view(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
 def manage_members(request, member_id=None):
     if request.method == 'GET':
         try:
@@ -282,6 +282,46 @@ def manage_members(request, member_id=None):
                 end_date=data.get('endDate')
             )
             return Response({"message": "Thêm hội viên thành công!", "id": member.id}, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    elif request.method in ['PUT', 'PATCH']:
+        if not member_id:
+            return Response({"error": "Thiếu ID hội viên!"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            member = MemberPackage.objects.get(id=member_id)
+            data = request.data
+
+            if 'fullName' in data and data.get('fullName') is not None:
+                member.full_name = data.get('fullName')
+            if 'email' in data and data.get('email') is not None:
+                member.email = data.get('email')
+            if 'phone' in data and data.get('phone') is not None:
+                member.phone = data.get('phone')
+            if 'packageName' in data and data.get('packageName') is not None:
+                member.package_name = data.get('packageName')
+            if 'startDate' in data and data.get('startDate'):
+                member.start_date = data.get('startDate')
+            if 'endDate' in data and data.get('endDate'):
+                member.end_date = data.get('endDate')
+
+            member.save()
+            return Response({
+                "message": "Cập nhật hội viên thành công!",
+                "data": {
+                    "id": f"M00{member.id}",
+                    "realId": member.id,
+                    "fullName": member.full_name,
+                    "email": member.email,
+                    "phone": member.phone,
+                    "packageName": member.package_name,
+                    "startDate": str(member.start_date) if member.start_date else '',
+                    "endDate": str(member.end_date) if member.end_date else '',
+                    "status": "Active" if (member.end_date and member.end_date >= date.today()) else "Expired"
+                }
+            }, status=status.HTTP_200_OK)
+        except MemberPackage.DoesNotExist:
+            return Response({"error": "Không tìm thấy hội viên!"}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
